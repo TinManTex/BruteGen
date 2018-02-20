@@ -1,0 +1,11 @@
+{
+  "batch_size": 5,
+  "words_base_path": "D:\\GitHub\\BruteGen\\Examples\\Variations",
+  "words_paths": ["somewords", "underscore", "oh_look_words", "YetMoreWords-as-optional"],
+  "word_variations_all": [
+    "all_upper",
+    "all_lower",
+    "capitalized"
+  ],
+  "output_path": "D:\\GitHub\\BruteGen\\Examples\\Examples Output",
+}

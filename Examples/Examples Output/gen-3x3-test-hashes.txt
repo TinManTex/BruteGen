@@ -1,0 +1,3 @@
+[wordsA-1][wordsB-2][wordsC-3]
+[wordsA-2][wordsB-2][wordsC-2]
+[wordsA-2][wordsB-3][wordsC-2]

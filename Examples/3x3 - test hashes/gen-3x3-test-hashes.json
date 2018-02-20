@@ -1,0 +1,12 @@
+{
+  "batch_size": 1,
+  "words_base_path": "D:\\GitHub\\BruteGen\\Examples\\3x3 - test hashes",
+  "words_paths": [
+    "wordA",
+    "wordB",
+    "wordC"
+  ],
+  "output_path": "D:\\GitHub\\BruteGen\\Examples\\Examples output",
+  "test_hashes_path": "D:\\GitHub\\BruteGen\\Examples\\3x3 - test hashes\\StrCode32Hashes",
+  "test_hashes_func": "StrCode32"
+}
