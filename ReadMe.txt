@@ -20,11 +20,12 @@ Notes:
 
 
   "words_base_path": "D:\\GitHub\\BruteGen\\Examples\\3x3 - test hashes",
-  //tex used to set working path to allow words_paths be relative (and shorter)
+  //tex  optional, will fall back to path of the config .json, used to set working path to allow words_paths be relative (and shorter)
   //.json requires backslashes to be escaped with a backslash
 
   "words_paths": ["wordA", "wordB", "wordC"],
-  //tex path to file of strings per word, actual file must have .txt extension, but path provided here can be without, the loading method will deal with it.
+  //tex path to file of strings per word, can be a full or path relative to words_base_path.
+  Actual file must have .txt extension, but path provided here can be without, the loading method will deal with it.
 
   "word_variations_all": [
     "dont_add_original",

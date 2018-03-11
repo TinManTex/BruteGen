@@ -11,7 +11,7 @@ namespace BruteGen {
 
         class GenConfig {
             public int batch_size = 10000000;//tex number of strings to generate before writing to output (both disk and console), resume state will also be saved. The time it will take to complete a batch also depends on how many words and the length of the word lists. There's also a trade off between how often it saves progress vs the i/o overhead of doing so. 
-            public string words_base_path = "";//tex used to set working path to allow words_paths be relative thus shorter.
+            public string words_base_path = null;//tex optional, will fall back to path of config.json / arg[0], used to set working path to allow words_paths be relative thus shorter.
             public List<string> words_paths = new List<string>();//tex path to file of strings per word, file must have .txt extension, but provided path can be without, the loading method will deal with it.
             public HashSet<string> word_variations_all = new HashSet<string>();//tex will add a variation for each word in a wordlist
             public string output_path = null; //tex optional, will fall back to wordspath, path to write strings and resume_state to.
@@ -57,6 +57,9 @@ namespace BruteGen {
             config.words_base_path = GetPath(config.words_base_path);
             config.test_hashes_path = GetPath(config.test_hashes_path);
             config.output_path = GetPath(config.output_path);
+            if (config.words_base_path == null) {
+                config.words_base_path = Path.GetDirectoryName(configPath);
+            }
             if (config.output_path == null) {
                 config.output_path = config.words_base_path;
             }
@@ -102,29 +105,13 @@ namespace BruteGen {
                 }
             }
 
+
             if (hashInfo.inputHashes != null) {
                 Console.WriteLine("Will test strings with " + config.test_hashes_func);
             }
 
             Console.WriteLine("Reading words lists");
-            var allWordsLists = new List<string>[config.words_paths.Count];
-            for (int i = 0; i < allWordsLists.Length; i++) {
-                string wordPath = config.words_paths[i];
-                if (!wordPath.Contains(".txt")) {
-                    wordPath = wordPath += ".txt";
-                }
-                List<string> wordsList = GetStrings(wordPath).ToList<string>();
-                if (wordsList == null) {
-                    Console.WriteLine("ERROR file or dir " + wordPath + " not found");
-                    return;
-                }
-
-                if (wordsList.Count == 0) {
-                    Console.WriteLine("WARNING: wordslist for " + wordPath + " is empty");
-                }
-
-                allWordsLists[i] = wordsList;
-            }
+            var allWordsLists = GetWordsLists(config.words_paths);
 
             GenerateWordVariations(config, ref allWordsLists);
 
@@ -137,14 +124,7 @@ namespace BruteGen {
 
             int batchSize = config.batch_size;
             Console.WriteLine("Batch size:" + batchSize);
-
-            Stack<RunState> resumeState = null;
-            if (File.Exists(resumeStatePath)) {
-                Console.WriteLine("Reading resume_state");
-                string resumeJson = File.ReadAllText(resumeStatePath);
-                resumeState = JsonConvert.DeserializeObject<Stack<RunState>>(resumeJson);
-                //TODO exception handling
-            }
+            Stack<RunState> resumeState = ReadResumeState(resumeStatePath);
 
             string stringsOutPath = Path.Combine(config.output_path, outputName + ".txt");
 
@@ -157,6 +137,18 @@ namespace BruteGen {
             //SimpleTests(allWordsLists);
 
             Console.WriteLine("done");
+        }
+
+        private static Stack<RunState> ReadResumeState(string resumeStatePath) {
+            Stack<RunState> resumeState = null;
+            if (File.Exists(resumeStatePath)) {
+                Console.WriteLine("Reading resume_state");
+                string resumeJson = File.ReadAllText(resumeStatePath);
+                resumeState = JsonConvert.DeserializeObject<Stack<RunState>>(resumeJson);
+                //TODO exception handling
+            }
+
+            return resumeState;
         }
 
         static void GenerateStrings(Stack<RunState> resumeState, List<string>[] allWordsLists, HashInfo hashInfo, int batchSize, string resumeStatePath, string stringsOutPath) {
@@ -220,7 +212,7 @@ namespace BruteGen {
                             foreach (int index in recurseState) {
                                 rs += " " + index;
                             }
-                            Console.WriteLine(rs + "          : " + state.currentString);
+                            Console.WriteLine(rs + "          : " + state.currentString);//TODO: order is shifted by one in comparison to wordcounts output earlier in the program, figure out what's up.
                         }
                     } else {
                         recurseState[state.currentDepth] = state.currentWordListIndex;
@@ -382,6 +374,28 @@ namespace BruteGen {
             GenerateStringSimple2_r(allWordsLists, startStateS);
 
             GenerateStringSimple_Stack(allWordsLists);
+        }
+
+        private static List<string>[] GetWordsLists(List<string> wordPaths) {
+            List<string>[] allWordsLists = new List<string>[wordPaths.Count];
+            for (int i = 0; i < allWordsLists.Length; i++) {
+                string wordPath = wordPaths[i];
+                if (!wordPath.Contains(".txt")) {
+                    wordPath = wordPath += ".txt";
+                }
+                List<string> wordsList = GetStrings(wordPath).ToList<string>();
+                if (wordsList == null) {
+                    Console.WriteLine("ERROR file or dir " + wordPath + " not found");
+                    return null;
+                }
+
+                if (wordsList.Count == 0) {
+                    Console.WriteLine("WARNING: wordslist for " + wordPath + " is empty");
+                }
+
+                allWordsLists[i] = wordsList;
+            }
+            return allWordsLists;
         }
 
         private static void GenerateWordVariations(GenConfig genConfig, ref List<string>[] allWordsLists) {
