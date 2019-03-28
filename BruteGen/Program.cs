@@ -233,7 +233,7 @@ namespace BruteGen {
             }//using sw
         }
 
-        //REF tex stripped down so I can get a handle on it
+        //REF tex stripped down GenerateString_r so I can get a handle on it
         static void GenerateStringSimple_r(List<string>[] allWordsList, int currentDepth, int currentWordListIndex, string currentString) {
             if (currentDepth == allWordsList.Length) {
                 Console.WriteLine(currentString);
@@ -249,7 +249,7 @@ namespace BruteGen {
             }
         }
 
-        //REF tex state into struct
+        //REF tex evolution of above with state moved into struct
         static void GenerateStringSimple2_r(List<string>[] allWordsList, RunState state) {
             if (state.currentDepth == allWordsList.Length) {
                 Console.WriteLine(state.currentString);
@@ -267,7 +267,7 @@ namespace BruteGen {
             }
         }
 
-        //REF tex converted to from recursion to using a stack (which just uses program stack anyway).
+        //REF tex converted from recursion (above) to using a stack object (recursion just uses program stack anyway).
         static void GenerateStringSimple_Stack(List<string>[] allWordsList) {
             Stack<RunState> stack = new Stack<RunState>();
 
@@ -297,7 +297,7 @@ namespace BruteGen {
             }
         }
 
-        //REF tex supersceded by recursionless
+        //REF tex original recursion version, supersceded by GenerateStrings
         static void GenerateString_r(HashInfo hashInfo, List<string>[] allWordsList, int currentDepth, int currentWordListIndex, string currentString, List<int> recurseState, int batchSize, ref int batchCount, string resumeStatePath, StreamWriter sw) {
             //tex completed whole string
             if (currentDepth == allWordsList.Length) {
