@@ -6,10 +6,18 @@ using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using static Utility.Hashing;
+using static BruteGen.HashFuncs;
 
+/// <summary>
+// BruteGen
+// Tool for generating strings for dictionary attacks, optional testing vs Fox Engine hashes.
+// Will read lists of strings('words') and combine them in order to generate each string.
+//
+// Should be easy enough to adapt for testing other types of hash by editing the HashFuncs class.
+/// </summary>
 namespace BruteGen {
     class Program {
+        //tex .json config
         class GenConfig {
             public int batch_size = 10000000;//tex number of strings to generate before writing to output (both disk and console), resume state will also be saved. The time it will take to complete a batch also depends on how many words and the length of the word lists. There's also a trade off between how often it saves progress vs the i/o overhead of doing so. 
             public bool test_on_batch = true; //tex: optional, default true, will parallel test whole batch instead of on each whole string. This is much faster, but also uses more cpu. Setting to false can be useful if you want to trade off cpu usage for time (like if you're using your computer for other stuff but what brutegen to tick away in background).
@@ -21,18 +29,23 @@ namespace BruteGen {
             public string test_hashes_func = null;//tex optional if not using test_hashes_path, name of hash function to use (see the HashWrangler tool).
         }
 
-        //Just a helper that bundles a set of hashes with the function of their hash type.
+        //tex Just a helper that bundles a set of hashes with the function of their hash type.
         class HashInfo {
-            public HashFunction HashFunc = StrCode32Str;
+            public HashFunction HashFunc = null;
             public HashSet<string> inputHashes = null;
         }
 
+        //tex state of 1 level of generation recusion/stack
         struct RunState {
             public int currentDepth;//tex progress of generation across words
             public int currentWordListIndex;//tex index down into list for a word
             public string currentString;//tex string being built, product of previous iterations
         }
 
+        /// <summary>
+        /// Main, entry point
+        /// </summary>
+        /// <param name="args">args[0] == .json config path</param>
         static void Main(string[] args) {
             if (args.Length == 0) {
                 Console.WriteLine("Usage: BruteGen.exe <config .json path>");
@@ -74,7 +87,7 @@ namespace BruteGen {
             Directory.SetCurrentDirectory(config.words_base_path);
 
 
-            string outputName = Path.GetFileNameWithoutExtension(configPath);//tex filename for resume stat and matches file.
+            string outputName = Path.GetFileNameWithoutExtension(configPath);//tex filename for resume state and matches file.
 
             string resumeStatePath = Path.Combine(config.output_path, $"{outputName}-resume_state.json");
 
@@ -84,22 +97,25 @@ namespace BruteGen {
                 Console.WriteLine("Reading input hashes:");
                 hashInfo.inputHashes = GetStrings(config.test_hashes_path);
                 if (hashInfo.inputHashes == null) {
-                    Console.WriteLine("ERROR: no hashes in inputhashes");
+                    Console.WriteLine("ERROR: no hashes found in " + config.test_hashes_path);
                     return;
                 }
 
-                try {
-                    hashInfo.HashFunc = hashFuncs[config.test_hashes_func.ToLower()];
-                } catch (KeyNotFoundException) {
-                    hashInfo.HashFunc = StrCode32Str;
+                if (config.test_hashes_func==null) {
+                    Console.WriteLine("ERROR: Could not find test_'hashes_func' in config");
+                    return;
+                }
+
+                hashInfo.HashFunc = HashFuncs.GetHashFuncByName(config.test_hashes_func);
+                if (hashInfo.HashFunc == null) {
                     Console.WriteLine("ERROR: Could not find hash function " + config.test_hashes_func);
                     return;
                 }
-            }
 
-            if (hashInfo.inputHashes != null) {
-                Console.WriteLine("Will test strings with " + config.test_hashes_func);
-            }
+                if (hashInfo.inputHashes != null) {
+                    Console.WriteLine("Will test strings with " + config.test_hashes_func);
+                }
+            }//if test_hashes_path
 
             Console.WriteLine("Reading words lists");
             var allWordsLists = GetWordsLists(config.words_paths);
@@ -192,7 +208,6 @@ namespace BruteGen {
 
             bool isResume = resumeState != null;
 
-            int batchCount = 0;
             List<string> batch = new List<string>();
 
             List<int> recurseState = new List<int>(new int[allWordsLists.Length]);//tex purely for user to get an idea of how it's progressing
@@ -220,7 +235,7 @@ namespace BruteGen {
                 Console.WriteLine("Resuming GenerateStrings");
             }
 
-            using (StreamWriter sw = new StreamWriter(stringsOutPath, isResume)) {
+            using (StreamWriter sw = new StreamWriter(stringsOutPath, isResume)) {//tex StreamWriter append = isResume
                 while (stack.Count > 0) {
                     RunState state = stack.Pop();
 
@@ -234,20 +249,16 @@ namespace BruteGen {
                             if (hashInfo.inputHashes == null) {
                                 sw.WriteLine(state.currentString);
                             } else {
-
                                 var hash = hashInfo.HashFunc(state.currentString);
                                 if (hashInfo.inputHashes.Contains(hash)) {
                                     sw.WriteLine(state.currentString);
                                 }
                             }
                         }//testOnBatch
-                        batchCount++;
                         batch.Add(state.currentString);
 
                         //tex write/flush current strings and write resume_state
-                        if (batchCount >= batchSize) {
-                            batchCount = 0;
-
+                        if (batch.Count >= batchSize) {
                             //tex write resume state
                             string jsonStringOut = JsonConvert.SerializeObject(stack);
                             File.WriteAllText(resumeStatePath, jsonStringOut);
@@ -287,7 +298,7 @@ namespace BruteGen {
                     }//if generated whole word
                 }//while stack
 
-                //tex need to process uncomplete batch
+                //tex need to process incomplete batch
                 if (batch.Count > 0) {
                     //tex test batch
                     if (testOnBatch) {
@@ -296,9 +307,7 @@ namespace BruteGen {
 
                     //tex clear batch and flush/write matches streamwriter
                     batch = new List<string>();
-
                     sw.Flush();
-
                 }//batch.Count > 0
             }//using sw
 
@@ -317,7 +326,7 @@ namespace BruteGen {
         private static void BatchTest(HashInfo hashInfo, List<string> batch, StreamWriter sw) {
             ConcurrentBag<string> matches = new ConcurrentBag<string>();
             Parallel.ForEach(batch, currentString => {
-                if (hashInfo.inputHashes == null) {
+                if (hashInfo.inputHashes == null) {//tex if no inputhashes then we just write every generated string
                     matches.Add(currentString);
                 } else {
 
@@ -495,9 +504,11 @@ namespace BruteGen {
                         if (genConfig.word_variations_all.Contains("capitalized")) {
                             if (word.Length > 1) {
                                 expandedList.Add($"{word[0].ToString().ToUpper()}{word.Substring(1)}");
+                            } else {
+                                expandedList.Add(word.ToUpper());
                             }
                         }
-                    }
+                    }//foreach words
 
                     //tex after above since dont_add_original will clear non alphbetical strings since they have no case
                     if (genConfig.word_variations_all.Contains("blank_optional")) {
@@ -507,7 +518,7 @@ namespace BruteGen {
                     allWordsLists[i] = expandedList.ToList<string>();
                     allWordsLists[i].Sort();
                 }
-            }
+            }//if word_variations_all
         }//GenerateWordVariations
 
         private static string GetPath(string path) {

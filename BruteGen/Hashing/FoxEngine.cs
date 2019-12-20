@@ -6,29 +6,14 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 
-namespace Utility
+namespace Hashing
 {
-    //tex mostly from gzstool with some stuff commented out
-    public static class Hashing
+    //tex mostly from gzstool with stuff deleted
+    /// <summary>
+    /// Fox Engine Hashing functions
+    /// </summary>
+    public static class FoxEngine
     {
-        public delegate string HashFunction(string str);
-
-        public static Dictionary<string, HashFunction> hashFuncs = new Dictionary<string, HashFunction> {
-            {"strcode32", StrCode32Str},
-            {"strcode64", StrCode64Str},
-            {"pathfilenamecode32", PathFileNameCode32Str},
-            {"pathfilenamecode64", PathFileNameCode64Str},//tex for want of a better name
-            {"pathcode64", PathCode64Str},
-            {"pathcode64gz", PathCode64GzStr},
-            {"extensioncode64", ExtensionCode64Str },
-        };
-
-        private static readonly MD5 Md5 = MD5.Create();
-        private static readonly Dictionary<ulong, string> HashNameDictionary = new Dictionary<ulong, string>();
-
-        //tex OFF private static readonly Dictionary<byte[], string> Md5HashNameDictionary =
-          //  new Dictionary<byte[], string>(new StructuralEqualityComparer<byte[]>());
-
         private static readonly List<string> FileExtensions = new List<string>
         {
             "1.ftexs",
@@ -273,154 +258,6 @@ namespace Utility
         private static string DenormalizeFilePath(string filePath)
         {
             return filePath.Replace("\\", "/");
-        }
-
-        internal static bool TryGetFileNameFromHash(ulong hash, out string fileName)
-        {
-            bool foundFileName = true;
-            string filePath;
-            string fileExtension;
-
-            ulong extensionHash = hash >> 51;
-            ulong pathHash = hash & 0x3FFFFFFFFFFFF;
-
-            fileName = "";
-            if (!HashNameDictionary.TryGetValue(pathHash, out filePath))
-            {
-                filePath = pathHash.ToString("x");
-                foundFileName = false; 
-            }
-
-            fileName += filePath;
-
-            if (!ExtensionsMap.TryGetValue(extensionHash, out fileExtension))
-            {
-                fileExtension = "_unknown";
-                foundFileName = false;
-            }
-            else
-            {
-                fileName += ".";
-            }
-            fileName += fileExtension;
-            
-            DebugAssertHashMatches(foundFileName, hash, fileName);
-
-            return foundFileName;
-        }
-
-        [Conditional("DEBUG")]
-        private static void DebugAssertHashMatches(bool foundFileName, ulong hash, string fileName)
-        {
-            if (foundFileName)
-            {
-                ulong hashTest = HashFileNameWithExtension(fileName);
-                if (hash != hashTest)
-                {
-                    Debug.WriteLine("{0};{1:x};{2:x};{3:x}", fileName, hash, hashTest, (hashTest - hash));
-                }
-            }
-        }
-
-        public static void ReadDictionary(string path)
-        {
-            foreach (var line in File.ReadAllLines(path))
-            {
-                ulong hash = HashFileName(line) & 0x3FFFFFFFFFFFF;
-                if (HashNameDictionary.ContainsKey(hash) == false)
-                {
-                    HashNameDictionary.Add(hash, line);
-                }
-            }
-        }
-
-        /* //tex OFF
-        internal static byte[] Md5Hash(byte[] buffer)
-        {
-            return Md5.ComputeHash(buffer);
-        }
-
-        internal static byte[] Md5HashText(string text)
-        {
-            return Md5.ComputeHash(Encoding.Default.GetBytes(text));
-        }
-
-        public static void ReadMd5Dictionary(string path)
-        {
-            foreach (var line in File.ReadAllLines(path))
-            {
-                byte[] md5Hash = Md5HashText(line);
-                if (Md5HashNameDictionary.ContainsKey(md5Hash) == false)
-                {
-                    Md5HashNameDictionary.Add(md5Hash, line);
-                }
-            }
-        }
-
-        internal static bool TryGetFileNameFromMd5Hash(byte[] md5Hash, string entryName, out string fileName)
-        {
-            if (Md5HashNameDictionary.TryGetValue(md5Hash, out fileName) == false)
-            {
-                fileName = string.Format("{0}{1}", BitConverter.ToString(md5Hash).Replace("-", ""),
-                    GetFileExtension(entryName));
-                return false;
-            }
-            return true;
-        }
-        */
-
-        private static string GetFileExtension(string entryName)
-        {
-            string extension = "";
-            int index = entryName.LastIndexOf(".", StringComparison.Ordinal);
-            if (index != -1)
-            {
-                extension = entryName.Substring(index, entryName.Length - index);
-            }
-
-            return extension;
-        }
-
-
-        //Hashfuncs
-        public static string StrCode32Str(string text)
-        {
-            var hash = (uint)StrCode(text);
-            return hash.ToString();
-        }
-        public static string StrCode64Str(string text)
-        {
-            var hash = StrCode(text);
-            return hash.ToString();
-        }
-        //TODO: verify output matches lua PathFileNameCode32 (it was missing in some cases? see mockfox pathfilename note?)
-        public static string PathFileNameCode32Str(string text)
-        {
-            var hash = (uint)HashFileNameWithExtension(text);
-            return hash.ToString();
-        }
-        public static string PathFileNameCode64Str(string text)
-        {
-            ulong hash = Hashing.HashFileNameWithExtension(text);
-            return hash.ToString();
-        }
-        //tex DEBUGNOW TODO name, this is more specific to gzstool dictionary implementation than a general Fox implementation?
-        public static string PathCode64Str(string text)
-        {
-            ulong hash = HashFileName(text) & 0x3FFFFFFFFFFFF;
-            return hash.ToString("x");
-        }
-
-        public static string PathCode64GzStr(string text)
-        {
-            ulong hash = StrCode(text);
-            return hash.ToString("x");
-        }
-
-        public static string ExtensionCode64Str(string text)
-        {
-            ulong hash = HashFileExtension(text);
-            return hash.ToString();
         }
     }
 }
