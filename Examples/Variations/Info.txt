@@ -1,3 +1,1 @@
-The strings in the words lists only include brackets to make it clearer on how it's combined in output.
-
 NOTE: This example has a batch_size of 1 so you can see each string that is generated, this however is much worse performance when generating a lot of strings. See ReadMe for the default value and explanation.

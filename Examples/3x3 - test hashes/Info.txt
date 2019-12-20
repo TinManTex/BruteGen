@@ -5,3 +5,5 @@ Example of testing hashes, the included hashes are
 [wordsA-2][wordsB-3][wordsC-2]
 
 Which for this example we know will generate since it's output from gen-3x3-simple example.
+
+NOTE: This example has a batch_size of 1 so you can see each string that is generated, this however is much worse performance when generating a lot of strings. See ReadMe for the default value and explanation.
