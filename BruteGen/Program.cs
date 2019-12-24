@@ -4,6 +4,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using static BruteGen.HashFuncs;
@@ -14,13 +15,15 @@ using static BruteGen.HashFuncs;
 // Will read lists of strings('words') and combine them in order to generate each string.
 //
 // Should be easy enough to adapt for testing other types of hash by editing the HashFuncs class.
+// There's some performance loss since hash comparisons are done in string, but it simplifies things.
 /// </summary>
 namespace BruteGen {
     class Program {
         //tex .json config
         class GenConfig {
             public int batch_size = 10000000;//tex number of strings to generate before writing to output (both disk and console), resume state will also be saved. The time it will take to complete a batch also depends on how many words and the length of the word lists. There's also a trade off between how often it saves progress vs the i/o overhead of doing so. 
-            public bool test_on_batch = true; //tex: optional, default true, will parallel test whole batch instead of on each whole string. This is much faster, but also uses more cpu. Setting to false can be useful if you want to trade off cpu usage for time (like if you're using your computer for other stuff but what brutegen to tick away in background).
+            public bool test_on_batch = true; //tex: optional, default true, will parallel test whole batch instead of on each whole string. This is much faster, but also uses more cpu. Setting to false can be useful if you want to trade off cpu usage for time (like if you're using your computer for other stuff but what brutegen to tick away in background). Another side effect (due to the parallelization) is the order of written strings may be different.
+            public bool lockstep_same_word_lists = false;//tex word lists with the same filename will advance in lockstep, this allows you to build strings with repeating words in unison.
             public string words_base_path = null;//tex optional, will fall back to path of config.json / arg[0], used to set working path to allow words_paths be relative thus shorter.
             public List<string> words_paths = new List<string>();//tex path to file of strings per word, file must have .txt extension, but provided path can be without, the loading method will deal with it.
             public HashSet<string> word_variations_all = new HashSet<string>();//tex will add a variation for each word in a wordlist
@@ -35,11 +38,16 @@ namespace BruteGen {
             public HashSet<string> inputHashes = null;
         }
 
-        //tex state of 1 level of generation recusion/stack
-        struct RunState {
+        //tex LEGACY CULL state of 1 level of generation recusion/stack
+        struct RecurseStep {
             public int currentDepth;//tex progress of generation across words
             public int currentWordListIndex;//tex index down into list for a word
             public string currentString;//tex string being built, product of previous iterations
+        }
+
+        struct RunState {
+            public int[] recurseState;//tex current wordIndexes for each wordsList
+            public int[] completionState;//tex number of times list completed for each wordsList
         }
 
         /// <summary>
@@ -95,13 +103,14 @@ namespace BruteGen {
             var hashInfo = new HashInfo();
             if (config.test_hashes_path != null) {
                 Console.WriteLine("Reading input hashes:");
-                hashInfo.inputHashes = GetStrings(config.test_hashes_path);
+                int maxLength;
+                hashInfo.inputHashes = GetStrings(config.test_hashes_path, out maxLength);
                 if (hashInfo.inputHashes == null) {
                     Console.WriteLine("ERROR: no hashes found in " + config.test_hashes_path);
                     return;
                 }
 
-                if (config.test_hashes_func==null) {
+                if (config.test_hashes_func == null) {
                     Console.WriteLine("ERROR: Could not find test_'hashes_func' in config");
                     return;
                 }
@@ -118,22 +127,41 @@ namespace BruteGen {
             }//if test_hashes_path
 
             Console.WriteLine("Reading words lists");
-            var allWordsLists = GetWordsLists(config.words_paths);
+            int[] maxWordLengths;
+            var allWordsLists = GetWordsLists(config.words_paths, out maxWordLengths);
+            int maxStringLength = maxWordLengths.Sum();
 
             GenerateWordVariations(config, ref allWordsLists);
 
-            string wordCounts = "Word counts: ";
+            Console.WriteLine("Word counts:");
+            string listNames = " ";
             for (int i = 0; i < allWordsLists.Length; i++) {
-                wordCounts += " " + allWordsLists[i].Count;
+                listNames += Path.GetFileName(config.words_paths[i]) + "\t";
+            }
+            Console.WriteLine(listNames);
+
+            string wordCounts = " ";
+            for (int i = 0; i < allWordsLists.Length; i++) {
+                wordCounts += allWordsLists[i].Count + "\t";
             }
             Console.WriteLine(wordCounts);
 
             Console.WriteLine("Batch size:" + config.batch_size);
-            Stack<RunState> resumeState = ReadResumeState(resumeStatePath);
-
+            
             string stringsOutPath = Path.Combine(config.output_path, outputName + ".txt");
 
-            GenerateStrings(resumeState, allWordsLists, hashInfo, config.batch_size, config.test_on_batch, resumeStatePath, stringsOutPath);//tex the main generate/test loop
+            //LEGACY CULL
+            //Stack<RecurseStep> resumeStackState = ReadResumeStackState(resumeStatePath);
+            //GenerateStringsStack(resumeStackState, allWordsLists, hashInfo, config.batch_size, config.test_on_batch, resumeStatePath, stringsOutPath);
+
+            int[] lockstepIds = new int[allWordsLists.Length];
+            int[] lockstepHeads = new int[allWordsLists.Length];//tex maximum number of ids is actually wordsLists.Length / 2 + 1 (id 0 for 'not a lockstep list').
+            if (config.lockstep_same_word_lists) {
+                BuildLockstepInfo(config.words_paths, ref lockstepIds, ref lockstepHeads);
+            }//config.lockstep_same_word_lists
+
+
+            GenerateStrings(allWordsLists, lockstepIds, lockstepHeads, hashInfo, maxStringLength, config.batch_size, config.test_on_batch, resumeStatePath, stringsOutPath);//tex the main generate/test loop
 
             if (File.Exists(resumeStatePath)) {
                 File.Delete(resumeStatePath);
@@ -177,34 +205,315 @@ namespace BruteGen {
         /// <summary>
         /// Read .json resume state
         /// </summary>
-        /// <param name="resumeStatePath"></param>
-        /// <returns></returns>
-        private static Stack<RunState> ReadResumeState(string resumeStatePath) {
-            Stack<RunState> resumeState = null;
+        /// <param name="resumeStatePath">.json file path</param>
+        /// <returns>resume state</returns>
+        private static RunState ReadResumeState(string resumeStatePath, int listSize) {
+            RunState resumeState = new RunState();
             if (File.Exists(resumeStatePath)) {
                 Console.WriteLine("Reading resume_state");
                 string resumeJson = File.ReadAllText(resumeStatePath);
-                resumeState = JsonConvert.DeserializeObject<Stack<RunState>>(resumeJson);
+                resumeState = JsonConvert.DeserializeObject<RunState>(resumeJson);
+                //TODO exception handling
+            } else {
+                resumeState.recurseState = new int[listSize];
+                resumeState.completionState = new int[listSize];
+            }
+            return resumeState;
+        }//ReadResumeState
+
+        /// Read .json resume state //LEGACY CULL
+        private static Stack<RecurseStep> ReadResumeStackState(string resumeStatePath) {
+            Stack<RecurseStep> resumeState = null;
+            if (File.Exists(resumeStatePath)) {
+                Console.WriteLine("Reading resume_state");
+                string resumeJson = File.ReadAllText(resumeStatePath);
+                resumeState = JsonConvert.DeserializeObject<Stack<RecurseStep>>(resumeJson);
                 //TODO exception handling
             }
-
             return resumeState;
         }//ReadResumeState
 
         /// <summary>
-        /// Main work loop function
+        /// Uses identical names of word lists to work out infor for advancing in lockstep.
         /// </summary>
-        /// <param name="resumeState"></param>
-        /// <param name="allWordsLists"></param>
+        /// <param name="wordsPaths"></param>
+        /// <param name="lockstepIds">ref ids indexed by wordsList 0 if not a lockstep list</param>
+        /// <param name="lockstepHeads">ref highest/rightmost list for a lockstep, indexed by lockstepId</param>
+        private static void BuildLockstepInfo(List<string> wordsPaths, ref int[] lockstepIds, ref int[] lockstepHeads) {
+            int lockstepId = 0;
+            for (int i = wordsPaths.Count - 1; i >= 0; i--) {
+                string namei = Path.GetFileName(wordsPaths[i]);
+                //tex find matching lists
+                bool foundLockstep = false;
+                for (int j = i - 1; j >= 0; j--) {
+                    string namej = Path.GetFileName(wordsPaths[j]);
+                    if (namej == namei) {
+                        //tex new lockstep who dis?
+                        if (!foundLockstep) {
+                            foundLockstep = true;
+                            lockstepId++;
+                            lockstepIds[i] = lockstepId;
+                            lockstepHeads[lockstepId] = i;
+                        }
+                        lockstepIds[j] = lockstepId;
+                    }
+                }//for lists descending
+            }//for filenames
+        }//BuildLockstepInfo
+
+        /// <summary>
+        /// Main work loop function
+        /// A common string generation method is to use depth first recursion, with a depth cut-off, this is to allow partial completions to cover all combinations.
+        /// Thus the current state is tied up in the stack.
+        /// However if you shift empty strings to the words lists it becomes simpler to maintain a state of the current word indexes for each word list,
+        /// build the string from each wordlist/wordIndex, then just advance the wordIndexes.
+        /// This also makes it simpler to save off that state so a run can be quit and resumed.
+        /// Also (with a bit more complicated advance function) allows for lists to advance in lockstep.
+        /// </summary>
+        /// IO-IN: Resume state .json
+        /// IO-OUT: Resume state .json
+        /// IO-OUT: Generated/matched strings .txt
+        static void GenerateStrings(List<string>[] wordsLists, int[] lockstepIds, int[] lockstepHeads, HashInfo hashInfo, int maxStringLength, int batchSize, bool testOnBatch, string resumeStatePath, string stringsOutPath) {
+            var totalStopwatch = new System.Diagnostics.Stopwatch();
+            totalStopwatch.Start();
+            int loopCount = 0;
+
+            RunState runState = ReadResumeState(resumeStatePath, wordsLists.Length);//tex IO-IN
+            bool isResume = File.Exists(resumeStatePath);
+
+            List<string> batch = new List<string>();
+
+            int[] listSizes = new int[wordsLists.Length];
+
+            for (int i = 0; i < wordsLists.Count(); i++) {
+                listSizes[i] = wordsLists[i].Count();
+            }
+
+            if (!isResume) {
+                Console.WriteLine("Starting GenerateStrings");
+            } else {
+                Console.WriteLine("Resuming GenerateStrings");
+            }
+
+            StringBuilder stringBuilder = new StringBuilder(maxStringLength);
+
+            using (StreamWriter outputStringsStream = new StreamWriter(stringsOutPath, isResume)) {//tex IO-OUT StreamWriter append = isResume
+                do {
+                    loopCount++;
+                    
+                    string currentString = "";
+                    stringBuilder.Clear();
+                    for (int listIndex = 0; listIndex < wordsLists.Length; listIndex++) {
+                        int wordIndex = runState.recurseState[listIndex];
+                        var wordList = wordsLists[listIndex];
+                        string word = wordList[wordIndex];
+                        stringBuilder.Append(word);//tex appending to a string is slower than stringbuilder at the rate/amount of strings we're using.
+                    }
+                    currentString = stringBuilder.ToString();
+
+                    if (!testOnBatch) {
+                        //tex if no inputhashes then we just write every generated string
+                        if (hashInfo.inputHashes == null) {
+                            outputStringsStream.WriteLine(currentString);
+                        } else {
+                            var hash = hashInfo.HashFunc(currentString);
+                            if (hashInfo.inputHashes.Contains(hash)) {
+                                outputStringsStream.WriteLine(currentString);
+                            }
+                        }
+                    }//testOnBatch
+                    batch.Add(currentString);
+
+                    //tex write/flush current strings and write resume_state
+                    if (batch.Count >= batchSize) {
+                        //tex IO-OUT: write resume state
+                        string jsonStringOut = JsonConvert.SerializeObject(runState);
+                        File.WriteAllText(resumeStatePath, jsonStringOut);
+
+                        //tex give user feedback
+                        string rs = " ";
+                        foreach (int wordIndex in runState.recurseState) {
+                            rs += wordIndex + "\t";
+                        }
+                        Console.WriteLine(rs + "\t\t: " + currentString);
+
+                        //tex test batch
+                        if (testOnBatch) {
+                            BatchTest(hashInfo, batch, outputStringsStream);
+                        }//testOnBatch
+
+                        //tex clear batch and flush/write matches
+                        batch = new List<string>();
+                        outputStringsStream.Flush();
+                    }//batchSize
+                } while (AdvanceState_r(wordsLists.Length - 1, listSizes, lockstepIds, lockstepHeads, ref runState));
+
+                //tex need to process incomplete batch
+                if (batch.Count > 0) {
+                    //tex test batch
+                    if (testOnBatch) {
+                        BatchTest(hashInfo, batch, outputStringsStream);
+                    }//testOnBatch
+
+                    //tex clear batch and flush/write matches streamwriter
+                    batch = new List<string>();
+                    outputStringsStream.Flush();
+                }//batch.Count > 0
+            }//using sw
+
+            //tex print stats
+            totalStopwatch.Stop();
+            var timeSpan = totalStopwatch.Elapsed;
+            Console.WriteLine($"GenerateStrings completed in {timeSpan.Hours}:{timeSpan.Minutes}:{timeSpan.Seconds}:{timeSpan.Milliseconds}");
+            Console.WriteLine($"LoopCount: {loopCount}");//tex should match the product of wordsLists counts.
+            Console.WriteLine("Completion count:");
+            string cs = " ";
+            foreach (int completionCount in runState.completionState) {
+                cs += completionCount + "\t";
+            }
+            Console.WriteLine(cs);
+        }//GenerateStrings
+
+        /// <summary>
+        /// REF LEGACY version prior to lockstep implemenation
+        /// Advances a wordlist, if the wordlist hits it's max it wraps to 0 then is called to advance the previous list.
+        /// Function is initially called with listIndex of the last list.
+        /// Think of it like an odometer
+        /// </summary>
+        /// <param name="recurseState">Current wordIndexes of all lists</param>
+        /// <returns>false if first/lowest list has wrapped (thus all complete)</returns>
+        private static bool AdvanceStateSimple_r(int listIndex, int[] listSizes, ref int[] recurseState) {
+            recurseState[listIndex]++;//tex next word
+            if (recurseState[listIndex] >= listSizes[listIndex]) {//tex hit end of list, wrap
+                recurseState[listIndex] = 0;
+                //tex advance previous list
+                listIndex--;
+                if (listIndex < 0) {//tex unless we've done the first list, then we're done
+                    return false;
+                } else {
+                    return AdvanceStateSimple_r(listIndex, listSizes, ref recurseState);
+                }
+            }
+            return true;
+        }//AdvanceStateSimple_r
+
+        /// <summary>
+        /// Advances a wordlist, if the wordlist hits it's max it wraps to 0 then is called to advance the previous list.
+        /// Function is initially called with listIndex of the last/highest list.
+        /// Think of it like an odometer, except some of the counters can advance in lockstep.
+        /// </summary>
+        /// <param name="listIndex">Index of word list we want to try and advance.</param>
+        /// <param name="listSizes">Indexed by wordList</param>
+        /// <param name="lockstepIds">A config can have multiple word lists that advance in lockstep, indexed by wordList</param>
+        /// <param name="lockstepHeads">Highest/rightmost list of word lists that advance in lockstep, indexed by lockstepId</param>
+        /// <param name="runState">ref Current wordIndexes of all lists and completion state</param>
+        /// <returns>continueAdvance - false if first/lowest list has wrapped (thus all complete)</returns>
+        private static bool AdvanceState_r(int listIndex, int[] listSizes, int[] lockstepIds, int[] lockstepHeads, ref RunState runState) {
+            int lockstepId = lockstepIds[listIndex];
+            int lockstepHead = lockstepHeads[lockstepId];
+
+            bool wrapped = false;
+            if (lockstepId == 0) {//tex id 0 == always advance (not a lockstep list)
+                wrapped = AdvanceList(listIndex, listSizes, runState);
+            } else if (lockstepHead == listIndex) {//tex only the head of a lockstep can be advanced
+                for (int i = lockstepHead; i >= 0; i--) {
+                    if (lockstepIds[i] == lockstepId) {
+                        wrapped = AdvanceList(i, listSizes, runState);
+                    }
+                }
+            }//tex advance and wrap
+       
+            if (wrapped) {
+                bool allComplete = CheckComplete(runState.completionState);
+                if (allComplete) {
+                    return false;
+                }
+
+                //tex find a lower list to advance
+                int previousList = listIndex - 1;
+                for (int i = previousList; i >= 0; i--) {
+                    int prevLockstepId = lockstepIds[i];
+                    int preLockstepHead = lockstepHeads[prevLockstepId];
+                    //tex only non lockstep (id 0) or the head (rightmost) lockstep list can be advanced
+                    if (prevLockstepId == 0 || preLockstepHead == i) {
+                        previousList = i;
+                        break;
+                    }
+                }//for lists reverse
+
+                //tex unless we've done the first list
+                if (previousList < 0) {
+                    //tex doesn't really work if we have lockstepping in the mix.
+                    //return false;//tex then we're done
+                } else {
+                    //tex advance lower list
+                    return AdvanceState_r(previousList, listSizes, lockstepIds, lockstepHeads, ref runState);
+                }
+            }
+            return true;
+        }//
+
+        /// <summary>
+        /// Advance list and completion state on wrap
+        /// </summary>
+        /// <param name="listIndex"></param>
+        /// <param name="listSizes"></param>
+        /// <param name="runState"></param>
+        /// <returns>true if wrapped</returns>
+        private static bool AdvanceList(int listIndex, int[] listSizes, RunState runState) {
+            runState.recurseState[listIndex]++;//tex next word
+            if (runState.recurseState[listIndex] >= listSizes[listIndex]) {//tex hit end of list, wrap
+                runState.recurseState[listIndex] = 0;
+                runState.completionState[listIndex]++;
+                return true;
+            }
+            return false;
+        }
+
+        private static bool CheckComplete(int[] completionState) {
+            //tex check to see if we're done
+            bool allComplete = true;
+            for (int i = 0; i < completionState.Length; i++) {
+                if (completionState[i] == 0) {
+                    allComplete = false;
+                    break;
+                }
+            }
+
+            return allComplete;
+        }
+
+        /// <summary>
+        /// Parallel test a batch of generated strings
+        /// </summary>
         /// <param name="hashInfo"></param>
-        /// <param name="batchSize"></param>
-        /// <param name="testOnBatch"></param>
-        /// <param name="resumeStatePath"></param>
-        /// <param name="stringsOutPath"></param>
-        static void GenerateStrings(Stack<RunState> resumeState, List<string>[] allWordsLists, HashInfo hashInfo, int batchSize, bool testOnBatch, string resumeStatePath, string stringsOutPath) {
+        /// <param name="batch"></param>
+        /// <param name="outputStringsStream"></param>
+        private static void BatchTest(HashInfo hashInfo, List<string> batch, StreamWriter outputStringsStream) {
+            ConcurrentBag<string> matches = new ConcurrentBag<string>();
+            Parallel.ForEach(batch, currentString => {
+                if (hashInfo.inputHashes == null) {//tex if no inputhashes then we just write every generated string
+                    matches.Add(currentString);
+                } else {
+                    var hash = hashInfo.HashFunc(currentString);
+                    if (hashInfo.inputHashes.Contains(hash)) {
+                        matches.Add(currentString);
+                    }
+                }
+            });//foreach batch
+
+            foreach (string match in matches) {
+                outputStringsStream.WriteLine(match);
+            }
+        }//BatchTest
+
+        //REF CULL Old stack based
+        static void GenerateStringsStack(Stack<RecurseStep> resumeState, List<string>[] allWordsLists, HashInfo hashInfo, int batchSize, bool testOnBatch, string resumeStatePath, string stringsOutPath) {
             var totalStopwatch = new System.Diagnostics.Stopwatch();
 
             totalStopwatch.Start();
+
+            int loopCount = 0;
 
             bool isResume = resumeState != null;
 
@@ -214,9 +523,9 @@ namespace BruteGen {
 
             //tex using a custom stack instead of the usual nested loops for generating strings, this allows the whole state to be saved of so program can be quit and resumed later.
             //tex initialize stack
-            Stack<RunState> stack = new Stack<RunState>();
+            Stack<RecurseStep> stack = new Stack<RecurseStep>();
             if (resumeState == null) {
-                RunState startState = new RunState();
+                RecurseStep startState = new RecurseStep();
                 startState.currentDepth = 0;
                 startState.currentWordListIndex = 0;
                 startState.currentString = "";
@@ -237,25 +546,27 @@ namespace BruteGen {
 
             using (StreamWriter sw = new StreamWriter(stringsOutPath, isResume)) {//tex StreamWriter append = isResume
                 while (stack.Count > 0) {
-                    RunState state = stack.Pop();
+                    loopCount++;
+                    RecurseStep state = stack.Pop();
 
                     //tex you can output currentString here if you want to catch each stage of generation instead of just complete string below
                     //but I currently prefer just having empty strings in the word lists for per word control
 
-                    if (state.currentDepth == allWordsLists.Length)//tex generated whole test-string
-                    {
+                    if (state.currentDepth == allWordsLists.Length) {//tex generated whole test-string
+                        string currentString = state.currentString;
+
                         if (!testOnBatch) {
                             //tex if no inputhashes then we just write every generated string
                             if (hashInfo.inputHashes == null) {
-                                sw.WriteLine(state.currentString);
+                                sw.WriteLine(currentString);
                             } else {
-                                var hash = hashInfo.HashFunc(state.currentString);
+                                var hash = hashInfo.HashFunc(currentString);
                                 if (hashInfo.inputHashes.Contains(hash)) {
-                                    sw.WriteLine(state.currentString);
+                                    sw.WriteLine(currentString);
                                 }
                             }
                         }//testOnBatch
-                        batch.Add(state.currentString);
+                        batch.Add(currentString);
 
                         //tex write/flush current strings and write resume_state
                         if (batch.Count >= batchSize) {
@@ -265,10 +576,10 @@ namespace BruteGen {
 
                             //tex give user feedback
                             string rs = "";
-                            foreach (int index in recurseState) {
-                                rs += " " + index;
+                            foreach (int wordIndex in recurseState) {
+                                rs += " " + wordIndex;
                             }
-                            Console.WriteLine(rs + "          : " + state.currentString);//TODO: order is shifted by one in comparison to wordcounts output earlier in the program, figure out what's up.
+                            Console.WriteLine(rs + "          : " + currentString);//TODO: order is shifted by one in comparison to wordcounts output earlier in the program, figure out what's up.
 
                             //tex test batch
                             if (testOnBatch) {
@@ -288,7 +599,7 @@ namespace BruteGen {
                         for (int wordListIndex = wordList.Count - 1; wordListIndex >= 0; wordListIndex--) {
                             //tex this is where we'd normally recursively call the generation function with the current state of the partially generated string
                             //instead we're just seting up our stack of that state, for the next loop
-                            RunState nextState = new RunState();
+                            RecurseStep nextState = new RecurseStep();
                             nextState.currentDepth = state.currentDepth + 1;
                             nextState.currentWordListIndex = wordListIndex;
                             nextState.currentString = state.currentString + wordList[wordListIndex];
@@ -314,33 +625,9 @@ namespace BruteGen {
             totalStopwatch.Stop();
             var timeSpan = totalStopwatch.Elapsed;
             Console.WriteLine($"GenerateStrings completed in {timeSpan.Hours}:{timeSpan.Minutes}:{timeSpan.Seconds}:{timeSpan.Milliseconds}");
+            Console.WriteLine($"LoopCount: {loopCount}");
 
         }//GenerateStrings
-
-        /// <summary>
-        /// Parallel test a batch of generated strings
-        /// </summary>
-        /// <param name="hashInfo"></param>
-        /// <param name="batch"></param>
-        /// <param name="sw"></param>
-        private static void BatchTest(HashInfo hashInfo, List<string> batch, StreamWriter sw) {
-            ConcurrentBag<string> matches = new ConcurrentBag<string>();
-            Parallel.ForEach(batch, currentString => {
-                if (hashInfo.inputHashes == null) {//tex if no inputhashes then we just write every generated string
-                    matches.Add(currentString);
-                } else {
-
-                    var hash = hashInfo.HashFunc(currentString);
-                    if (hashInfo.inputHashes.Contains(hash)) {
-                        matches.Add(currentString);
-                    }
-                }
-            });//foreach batch
-
-            foreach (string match in matches) {
-                sw.WriteLine(match);
-            }
-        }//BatchTest
 
         //REF tex stripped down GenerateString_r so I can get a handle on it
         static void GenerateStringSimple_r(List<string>[] allWordsList, int currentDepth, int currentWordListIndex, string currentString) {
@@ -359,14 +646,14 @@ namespace BruteGen {
         }//GenerateStringSimple_r
 
         //REF tex evolution of above with state moved into struct
-        static void GenerateStringSimple2_r(List<string>[] allWordsList, RunState state) {
+        static void GenerateStringSimple2_r(List<string>[] allWordsList, RecurseStep state) {
             if (state.currentDepth == allWordsList.Length) {
                 Console.WriteLine(state.currentString);
                 return;
             } else {
                 List<string> wordList = allWordsList[state.currentDepth];
                 for (int wordListIndex = 0; wordListIndex < wordList.Count; wordListIndex++) {
-                    RunState nextState = new RunState();
+                    RecurseStep nextState = new RecurseStep();
                     nextState.currentDepth = state.currentDepth + 1;
                     nextState.currentWordListIndex = wordListIndex;
                     nextState.currentString = state.currentString + wordList[wordListIndex];
@@ -378,9 +665,9 @@ namespace BruteGen {
 
         //REF tex converted from recursion (above) to using a stack object (recursion just uses program stack anyway).
         static void GenerateStringSimple_Stack(List<string>[] allWordsList) {
-            Stack<RunState> stack = new Stack<RunState>();
+            Stack<RecurseStep> stack = new Stack<RecurseStep>();
 
-            RunState startState = new RunState();
+            RecurseStep startState = new RecurseStep();
             startState.currentDepth = 0;
             startState.currentWordListIndex = 0;
             startState.currentString = "";
@@ -388,17 +675,17 @@ namespace BruteGen {
             stack.Push(startState);
 
             while (stack.Count > 0) {
-                RunState runState = stack.Pop();
+                RecurseStep recurseStep = stack.Pop();
 
-                if (runState.currentDepth == allWordsList.Length) {
-                    Console.WriteLine(runState.currentString);
+                if (recurseStep.currentDepth == allWordsList.Length) {
+                    Console.WriteLine(recurseStep.currentString);
                 } else {
-                    List<string> wordList = allWordsList[runState.currentDepth];
+                    List<string> wordList = allWordsList[recurseStep.currentDepth];
                     for (int wordListIndex = 0; wordListIndex < wordList.Count; wordListIndex++) {
-                        RunState nextState = new RunState();
-                        nextState.currentDepth = runState.currentDepth + 1;
+                        RecurseStep nextState = new RecurseStep();
+                        nextState.currentDepth = recurseStep.currentDepth + 1;
                         nextState.currentWordListIndex = wordListIndex;
-                        nextState.currentString = runState.currentString + wordList[wordListIndex];
+                        nextState.currentString = recurseStep.currentString + wordList[wordListIndex];
 
                         stack.Push(nextState);
                     }
@@ -455,16 +742,18 @@ namespace BruteGen {
         /// </summary>
         /// <param name="wordPaths"></param>
         /// <returns></returns>
-        private static List<string>[] GetWordsLists(List<string> wordPaths) {
+        private static List<string>[] GetWordsLists(List<string> wordPaths, out int[] maxWordLengths) {
             List<string>[] allWordsLists = new List<string>[wordPaths.Count];
+            maxWordLengths = new int[wordPaths.Count];
             for (int i = 0; i < allWordsLists.Length; i++) {
                 string wordPath = wordPaths[i];
                 if (!wordPath.Contains(".txt")) {
                     wordPath = wordPath += ".txt";
                 }
-                List<string> wordsList = GetStrings(wordPath).ToList<string>();
+                int maxWordLength;
+                List<string> wordsList = GetStrings(wordPath, out maxWordLength).ToList<string>();
                 if (wordsList == null) {
-                    Console.WriteLine("ERROR file or dir " + wordPath + " not found");
+                    Console.WriteLine("ERROR file " + wordPath + " not found");
                     return null;
                 }
 
@@ -472,6 +761,7 @@ namespace BruteGen {
                     Console.WriteLine("WARNING: wordslist for " + wordPath + " is empty");
                 }
 
+                maxWordLengths[i] = maxWordLength;
                 allWordsLists[i] = wordsList;
             }
             return allWordsLists;
@@ -533,7 +823,8 @@ namespace BruteGen {
             return path;
         }
 
-        private static HashSet<string> GetStrings(string path) {
+        private static HashSet<string> GetStrings(string path, out int maxWordLength) {
+            maxWordLength = 0;
             List<string> files = GetFileList(path);
             if (files == null) {
                 return null;
@@ -542,6 +833,7 @@ namespace BruteGen {
             var strings = new HashSet<string>();
             foreach (string filePath in files) {
                 foreach (string line in File.ReadLines(filePath)) {
+                    maxWordLength = Math.Max(line.Length, maxWordLength);
                     strings.Add(line);
                 }
             }
@@ -608,7 +900,7 @@ namespace BruteGen {
             File.WriteAllText(jsonOutPath, jsonStringOut);
 
 
-            RunState startStateS = new RunState();
+            RecurseStep startStateS = new RecurseStep();
             startStateS.currentDepth = 0;
             startStateS.currentWordListIndex = 0;
             startStateS.currentString = "";

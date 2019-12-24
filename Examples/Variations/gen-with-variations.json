@@ -1,5 +1,6 @@
 {
   "batch_size": 5,
+  "test_on_batch": false,
   "words_base_path": "D:\\GitHub\\BruteGen\\Examples\\Variations",
   "words_paths": ["somewords", "underscore", "oh_look_words", "YetMoreWords-as-optional"],
   "word_variations_all": [

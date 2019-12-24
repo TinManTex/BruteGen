@@ -20,7 +20,12 @@ Notes:
   While initially bulding an attack config I often have this low enough so it updates every few seconds, then when I think I've got the config correct I'll increase it to hit ~10-20 seconds between updates.
 
   "test_on_batch": "true",
-  //tex: optional, default true, will parallel test whole batch instead of on each whole string. This is much faster, but also uses more cpu. Setting to false can be useful if you want to trade off cpu usage for time (like if you're using your computer for other stuff but what brutegen to tick away in background).
+  //tex: optional, default true, will parallel test whole batch instead of on each whole string. This is much faster, but also uses more cpu. 
+  //Setting to false can be useful if you want to trade off cpu usage for time (like if you're using your computer for other stuff but what brutegen to tick away in background). 
+  //Another side effect (due to the parallelization) is the order of written strings may be different.
+          
+  "lockstep_same_word_lists" = false,
+  //tex word lists with the same filename will advance in lockstep, this allows you to build strings with repeating words in unison.
 
   "words_base_path": "D:\\GitHub\\BruteGen\\Examples\\3x3 - test hashes",
   //tex: optional, will fall back to path of the config .json, used to set working path to allow words_paths be relative (and shorter)

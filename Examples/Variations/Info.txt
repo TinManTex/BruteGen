@@ -1,1 +1,2 @@
 NOTE: This example has a batch_size of 1 so you can see each string that is generated, this however is much worse performance when generating a lot of strings. See ReadMe for the default value and explanation.
+This also runs with test_on_batch set to false which is slower, but gives regular output for the example (as it's not parallelized). Again, see ReadMe.

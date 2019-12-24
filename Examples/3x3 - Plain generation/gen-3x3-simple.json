@@ -1,5 +1,6 @@
 {
   "batch_size": 1,
+  "test_on_batch": false,
   "words_base_path": "D:\\GitHub\\BruteGen\\Examples\\3x3 - Plain generation",
   "words_paths": ["wordA", "wordB", "wordC"],
   "output_path": "D:\\GitHub\\BruteGen\\Examples\\Examples Output",
