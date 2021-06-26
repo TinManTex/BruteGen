@@ -8,13 +8,19 @@ using System.Text;
 
 namespace Hashing
 {
-    //tex mostly from gzstool with stuff deleted
+    //tex mostly from gzstool Utility.Hashing with some stuff commented out
     /// <summary>
     /// Fox Engine Hashing functions
     /// </summary>
     public static class FoxEngine
     {
-        private static readonly List<string> FileExtensions = new List<string>
+        private static readonly MD5 Md5 = MD5.Create();
+        private static readonly Dictionary<ulong, string> HashNameDictionary = new Dictionary<ulong, string>();
+
+        //tex OFF private static readonly Dictionary<byte[], string> Md5HashNameDictionary =
+          //  new Dictionary<byte[], string>(new StructuralEqualityComparer<byte[]>());
+
+        public static readonly List<string> FileExtensions = new List<string>
         {
             "1.ftexs",
             "1.nav2",
@@ -160,6 +166,7 @@ namespace Hashing
 
         private static readonly Dictionary<ulong, string> ExtensionsMap = FileExtensions.ToDictionary(HashFileExtension);
 
+        const ulong HashMask = 0x3FFFFFFFFFFFF; //TODO: ?? why this? is it ExtensionMask or what?
         public const ulong MetaFlag = 0x4000000000000;
 
         public static ulong HashFileExtension(string fileExtension) //from private to public
@@ -197,10 +204,16 @@ namespace Hashing
             byte[] seed1Bytes = new byte[sizeof(ulong)];
             for (int i = text.Length - 1, j = 0; i >= 0 && j < sizeof(ulong); i--, j++)
             {
+                //tex DEBUGNOW otherwise has exception on invalid chars
+                try {
                 seed1Bytes[j] = Convert.ToByte(text[i]);
             }
+                catch {
+                    return 0; //DEBUGNOW
+                }
+            }
             ulong seed1 = BitConverter.ToUInt64(seed1Bytes, 0);
-            ulong maskedHash = CityHash.CityHash.CityHash64WithSeeds(text, seed0, seed1) & 0x3FFFFFFFFFFFF;
+            ulong maskedHash = CityHash.CityHash.CityHash64WithSeeds(text, seed0, seed1) & HashMask;
 
             return metaFlag
                 ? maskedHash | MetaFlag
@@ -273,5 +286,113 @@ namespace Hashing
         {
             return filePath.Replace("\\", "/");
         }
+
+        internal static bool TryGetFileNameFromHash(ulong hash, out string fileName)
+        {
+            bool foundFileName = true;
+            string filePath;
+            string fileExtension;
+
+            ulong extensionHash = hash >> 51;
+            ulong pathHash = hash & HashMask;
+
+            fileName = "";
+            if (!HashNameDictionary.TryGetValue(pathHash, out filePath))
+            {
+                filePath = pathHash.ToString("x");
+                foundFileName = false; 
+            }
+
+            fileName += filePath;
+
+            if (!ExtensionsMap.TryGetValue(extensionHash, out fileExtension))
+            {
+                fileExtension = "_unknown";
+                foundFileName = false;
+            }
+            else
+            {
+                fileName += ".";
+            }
+            fileName += fileExtension;
+            
+            DebugAssertHashMatches(foundFileName, hash, fileName);
+
+            return foundFileName;
+        }
+
+        [Conditional("DEBUG")]
+        private static void DebugAssertHashMatches(bool foundFileName, ulong hash, string fileName)
+        {
+            if (foundFileName)
+            {
+                ulong hashTest = HashFileNameWithExtension(fileName);
+                if (hash != hashTest)
+                {
+                    Debug.WriteLine("{0};{1:x};{2:x};{3:x}", fileName, hash, hashTest, (hashTest - hash));
+                }
+            }
+        }
+
+        public static void ReadDictionary(string path)
+        {
+            foreach (var line in File.ReadAllLines(path))
+            {
+                ulong hash = HashFileName(line) & HashMask;
+                if (HashNameDictionary.ContainsKey(hash) == false)
+                {
+                    HashNameDictionary.Add(hash, line);
+                }
+            }
+        }
+
+        /* //tex OFF
+        internal static byte[] Md5Hash(byte[] buffer)
+        {
+            return Md5.ComputeHash(buffer);
+        }
+        */
+
+        internal static byte[] Md5HashText(string text)
+        {
+            return Md5.ComputeHash(Encoding.Default.GetBytes(text));
     }
+
+        /* tex OFF
+        public static void ReadMd5Dictionary(string path)
+        {
+            foreach (var line in File.ReadAllLines(path))
+            {
+                byte[] md5Hash = Md5HashText(line);
+                if (Md5HashNameDictionary.ContainsKey(md5Hash) == false)
+                {
+                    Md5HashNameDictionary.Add(md5Hash, line);
+                }
+            }
+        }
+
+        internal static bool TryGetFileNameFromMd5Hash(byte[] md5Hash, string entryName, out string fileName)
+        {
+            if (Md5HashNameDictionary.TryGetValue(md5Hash, out fileName) == false)
+            {
+                fileName = string.Format("{0}{1}", BitConverter.ToString(md5Hash).Replace("-", ""),
+                    GetFileExtension(entryName));
+                return false;
+            }
+            return true;
+        }
+        */
+
+        private static string GetFileExtension(string entryName)
+        {
+            string extension = "";
+            int index = entryName.LastIndexOf(".", StringComparison.Ordinal);
+            if (index != -1)
+            {
+                extension = entryName.Substring(index, entryName.Length - index);
+            }
+
+            return extension;
 }
+    }//FoxEngine
+}//namespace Hashing

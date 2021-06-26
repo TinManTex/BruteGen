@@ -7,7 +7,8 @@ using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using static BruteGen.HashFuncs;
+using Hashing;
+using static Hashing.HashFuncs;
 
 /// <summary>
 // BruteGen
@@ -817,6 +818,7 @@ namespace BruteGen {
                     path = Path.GetFullPath(path);
                 }
             } else {
+                Console.WriteLine("Could not find path " + path);
                 path = null;
             }
 
